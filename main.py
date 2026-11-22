@@ -170,7 +170,7 @@ class ArchaiaApp(App):
             if self.sm.current != "map":
                 self.sm.current = "map"
                 return True
-            if self.sheet.opacity:
+            if self.sheet.parent is not None:
                 self.close_sheet()
                 return True
         return False
@@ -181,13 +181,13 @@ class ArchaiaApp(App):
         fl = FloatLayout()
         self.map = TM.TileMap(cache_dir=os.path.join(DATA_DIR, "tiles"), offline_dir=D.OFFLINE, size_hint=(1, 1),
                               pos_hint={"x": 0, "y": 0})
-        self.map.online = self.cfg.get("hd", True)
         v = self.cfg.get("view")
         if v:
             self.map.lat, self.map.lon, self.map.zoom = v
         else:
             self.map.lat, self.map.lon, self.map.zoom = GREECE
-        self.map.layer = self.cfg.get("layer", "map")
+        lay = self.cfg.get("layer", "lite")
+        self.map.layer = lay if lay in self.map.layers() else self.map.layers()[0]
         self.map.color_of = lambda s: SG.PERIOD_COLORS.get(s.get("period", ""), TERRA)
         self.map.bind(on_select=lambda w, s: self.open_sheet(s))
         fl.add_widget(self.map)
@@ -233,27 +233,34 @@ class ArchaiaApp(App):
         top.add_widget(self.status)
         fl.add_widget(top)
 
-        # ---- δεξιά: κουμπιά
-        col = BoxLayout(orientation="vertical", size_hint=(None, None), width=dp(56), spacing=dp(10),
-                        pos_hint={"right": 0.98, "center_y": 0.55})
+        # ---- δεξιά: είδος χάρτη, Ελλάδα, θέση μου, λίστα (ψηλά, για να μην τα σκεπάζει η κάρτα χώρου)
+        col = BoxLayout(orientation="vertical", size_hint=(None, None), width=dp(50), spacing=dp(9),
+                        pos_hint={"right": 0.975, "top": 0.86})
         col.bind(minimum_height=col.setter("height"))
-        self.layer_btn = RoundBtn(text=TM.LAYERS[self.map.layer]["short"], size=(dp(56), dp(56)))
+        self.layer_btn = RoundBtn(text=TM.LAYERS[self.map.layer]["short"], size=(dp(50), dp(50)))
         self.layer_btn.bind(on_release=lambda *a: self.next_layer())
-        b_home = RoundBtn(icon="home")
-        b_home.bind(on_release=lambda *a: self.map.fly_to(*GREECE))
-        b_me = RoundBtn(icon="pin")
+        b_home = RoundBtn(icon="home", size=(dp(50), dp(50)))
+        b_home.bind(on_release=lambda *a: self.map.fly_to(*GREECE, dur=0.4))
+        b_me = RoundBtn(icon="pin", size=(dp(50), dp(50)))
         b_me.bind(on_release=lambda *a: self.my_location())
-        b_list = RoundBtn(icon="list")
+        b_list = RoundBtn(icon="list", size=(dp(50), dp(50)))
         b_list.bind(on_release=lambda *a: self.open_list())
-        b_in = RoundBtn(text="+", fg=BLUE)
-        b_in.bind(on_release=lambda *a: self.map.zoom_at(self.map.zoom + 1, *self.map.center))
-        b_out = RoundBtn(text="-", fg=BLUE)
-        b_out.bind(on_release=lambda *a: self.map.zoom_at(self.map.zoom - 1, *self.map.center))
-        self.hd_btn = RoundBtn(text="HD", fg=BLUE if self.map.online else (0.6, 0.6, 0.6, 1))
-        self.hd_btn.bind(on_release=lambda *a: self.toggle_hd())
-        for b in (self.layer_btn, self.hd_btn, b_home, b_me, b_list, b_in, b_out):
+        for b in (self.layer_btn, b_home, b_me, b_list):
             col.add_widget(b)
         fl.add_widget(col)
+        # ---- αριστερά: ζουμ + / −
+        zc = BoxLayout(orientation="vertical", size_hint=(None, None), width=dp(54), height=dp(118), spacing=dp(10),
+                       pos_hint={"x": 0.025, "top": 0.74})
+        b_in = RoundBtn(text="+", fg=BLUE, size=(dp(54), dp(54)))
+        b_in.lab.font_size = sp(26)
+        b_in.bind(on_release=lambda *a: self.map.zoom_by(1))
+        b_out = RoundBtn(text="−", fg=BLUE, size=(dp(54), dp(54)))
+        b_out.lab.text = "[b]-[/b]"
+        b_out.lab.font_size = sp(30)
+        b_out.bind(on_release=lambda *a: self.map.zoom_by(-1))
+        zc.add_widget(b_in)
+        zc.add_widget(b_out)
+        fl.add_widget(zc)
 
         # ---- κάτω: φίλτρα
         self.filter_bar = BoxLayout(size_hint=(0.94, None), height=dp(40), spacing=dp(6),
@@ -263,7 +270,7 @@ class ArchaiaApp(App):
 
         # ---- κάρτα επιλεγμένου χώρου
         self.sheet = BoxLayout(orientation="vertical", size_hint=(0.96, None), height=dp(330),
-                               pos_hint={"center_x": 0.5, "y": 0.075}, opacity=0, disabled=True)
+                               pos_hint={"center_x": 0.5, "y": 0.075}, opacity=0)
 
         def shbg(*a):
             self.sheet.canvas.before.clear()
@@ -273,7 +280,7 @@ class ArchaiaApp(App):
                 Color(*UW.C["card"])
                 RoundedRectangle(pos=self.sheet.pos, size=self.sheet.size, radius=[dp(22)])
         self.sheet.bind(pos=shbg, size=shbg)
-        fl.add_widget(self.sheet)
+        self.map_layout = fl          # η κάρτα μπαίνει μόνο όταν ανοίγει (κρυφή δεν «τρώει» αγγίγματα)
         scr.add_widget(fl)
         return scr
 
@@ -310,20 +317,12 @@ class ArchaiaApp(App):
         self.status.text = esc(text)
 
     def next_layer(self):
-        keys = list(TM.LAYERS)
-        self.map.layer = keys[(keys.index(self.map.layer) + 1) % len(keys)]
-        self.map._on_layer()
+        keys = self.map.layers()
+        cur = self.map.layer if self.map.layer in keys else keys[0]
+        self.map.layer = keys[(keys.index(cur) + 1) % len(keys)]
         self.layer_btn.lab.text = f"[b]{TM.LAYERS[self.map.layer]['short']}[/b]"
-        extra = "" if self.map.has_offline() else " (μόνο με internet)"
+        extra = "" if self.map.layer == "lite" else " (με internet)"
         self.toast(f"Χάρτης: {TM.LAYERS[self.map.layer]['name']}{extra}")
-        self.save_cfg()
-
-    def toggle_hd(self):
-        self.map.online = not self.map.online
-        self.cfg["hd"] = self.map.online
-        self.hd_btn.lab.color = BLUE if self.map.online else (0.6, 0.6, 0.6, 1)
-        self.toast("Λεπτομέρεια HD: online πλακίδια όταν κάνεις πολύ ζουμ" if self.map.online else
-                   "Ελαφριά λειτουργία: μόνο ο ενσωματωμένος χάρτης, χωρίς λήψεις")
         self.save_cfg()
 
     def load_all(self):
@@ -433,10 +432,11 @@ class ArchaiaApp(App):
             row.add_widget(b)
         body.add_widget(row)
         sh.add_widget(body)
-        sh.disabled = False
-        if not sh.opacity:
+        Animation.cancel_all(sh)
+        if sh.parent is None:
             sh.opacity = 0
-            Animation(opacity=1, d=0.2).start(sh)
+            self.map_layout.add_widget(sh)
+        Animation(opacity=1, d=0.15).start(sh)
         self.fill_image(img, s)
         if not s.get("desc") or not s.get("top"):
             self.bg(lambda: D.wiki_summary(s), lambda r: self._sheet_text(s, r))
@@ -452,8 +452,11 @@ class ArchaiaApp(App):
             s["img"] = r["img"]
 
     def close_sheet(self):
-        self.sheet.disabled = True
-        Animation(opacity=0, d=0.15).start(self.sheet)
+        sh = self.sheet
+        Animation.cancel_all(sh)
+        if sh.parent is not None:
+            sh.parent.remove_widget(sh)
+        sh.opacity = 0
         self.map.selected = None
         self.map._sstate = None
         self.map._trig()

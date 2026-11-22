@@ -17,10 +17,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Λήψη στατικού χάρτη Ελλάδας και όλων των χώρων
+      - name: Ελαφρύς χάρτης Ελλάδας και όλοι οι χώροι
         continue-on-error: true
         run: |
-          pip install pillow
+          pip install shapely numpy mapbox_earcut
           python tools/prepare_offline.py offline
           ls -la offline
           du -sh offline
