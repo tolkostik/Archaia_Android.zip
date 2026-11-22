@@ -167,6 +167,10 @@ class ArchaiaApp(App):
 
     def _key(self, win, key, *a):
         if key == 27:
+            ov = getattr(self, "viewer_ov", None)
+            if ov is not None and ov.parent is not None:
+                ov.parent.remove_widget(ov)
+                return True
             if self.sm.current != "map":
                 self.sm.current = "map"
                 return True
@@ -468,7 +472,11 @@ class ArchaiaApp(App):
 
         def get():
             r = D.wiki_summary(s)
-            return (r or {}).get("img", "")
+            u = (r or {}).get("img", "")
+            if not u:
+                ph = D.photos(s, limit=8)
+                u = ph[0]["full"] if ph else ""
+            return u
 
         def done(u):
             if u:
@@ -528,6 +536,17 @@ class ArchaiaApp(App):
                            ("Αφαίρεση από αγαπημένα" if s["id"] in self.favs else "+ Αγαπημένα",
                             lambda: (self.toggle_fav(s), self.open_detail(s)), None)])
 
+        # φωτογραφίες
+        pc = UW.CardBox(pad=12)
+        box.add_widget(pc)
+        pc.add_widget(UW.text(f"[b][color={hx(BLUE)}]Φωτογραφίες[/color][/b]", 16))
+        ph_holder = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(8))
+        ph_holder.bind(minimum_height=ph_holder.setter("height"))
+        pc.add_widget(ph_holder)
+        ph_holder.add_widget(UW.text("Αναζήτηση φωτογραφιών…", 13, UW.C["muted"]))
+        self.bg(lambda: D.photos(s), lambda ph: self.show_photos(ph_holder, ph, s) if self.detail_site is s else None,
+                lambda e: self.show_photos(ph_holder, [], s) if self.detail_site is s else None)
+
         # κείμενο
         c = UW.CardBox(pad=14)
         box.add_widget(c)
@@ -575,8 +594,6 @@ class ArchaiaApp(App):
                     info.add_widget(UW.text(f"[b]{k}:[/b] {esc(v)}", 14))
             if d.get("web"):
                 self.btn_row(info, [("Επίσημη ιστοσελίδα / εισιτήρια", lambda: webbrowser.open(d["web"]), None)])
-            if d.get("cat"):
-                self.bg(lambda: D.gallery(d["cat"]), lambda imgs: self.show_gallery(gal, imgs))
         if s.get("qid"):
             self.bg(lambda: D.details(s["qid"]), show_details)
 
@@ -610,40 +627,53 @@ class ArchaiaApp(App):
                           ("Ωράρια (Οδυσσεύς)", lambda: webbrowser.open("https://odysseus.culture.gr/"), None)])
         self.sm.current = "detail"
 
-    def show_gallery(self, holder, imgs):
-        if not imgs:
+    def show_photos(self, holder, photos, s, shown=12):
+        """Πλέγμα φωτογραφιών (3 ανά σειρά)· πάτημα = μεγάλη προβολή με εναλλαγή."""
+        holder.clear_widgets()
+        if not photos:
+            holder.add_widget(UW.text("Δεν βρέθηκαν φωτογραφίες γι' αυτόν τον χώρο (ή δεν υπάρχει σύνδεση).", 13,
+                                      UW.C["muted"]))
             return
-        c = UW.CardBox(pad=12)
-        holder.add_widget(c)
-        c.add_widget(UW.text(f"[b][color={hx(BLUE)}]Φωτογραφίες ({len(imgs)})[/color][/b]", 16))
-        sv = ScrollView(do_scroll_y=False, size_hint_y=None, height=dp(170), bar_width=dp(3))
-        row = BoxLayout(orientation="horizontal", size_hint_x=None, spacing=dp(8))
-        row.bind(minimum_width=row.setter("width"))
-        for u in imgs:
-            fr = Tap(size_hint=(None, None), size=(dp(220), dp(160)))
+        holder.add_widget(UW.text(f"{len(photos)} φωτογραφίες από Wikimedia Commons · πάτα για μεγέθυνση", 12,
+                                  UW.C["muted"]))
+        gap = dp(6)
+        side = (Window.width - dp(24) - dp(24) - 2 * gap) / 3
+        grid = StackLayout(size_hint_y=None, spacing=gap)
+        grid.bind(minimum_height=grid.setter("height"))
+        for i, ph in enumerate(photos[:shown]):
+            fr = Tap(size_hint=(None, None), size=(side, side))
 
             def fb(*a, w=fr):
                 w.canvas.before.clear()
                 with w.canvas.before:
                     Color(*UW.C["line"])
-                    RoundedRectangle(pos=w.pos, size=w.size, radius=[dp(12)])
+                    RoundedRectangle(pos=w.pos, size=w.size, radius=[dp(10)])
             fr.bind(pos=fb, size=fb)
             im = self.new_image()
+            try:
+                im.fit_mode = "cover"
+            except Exception:  # noqa: BLE001
+                pass
             fr.add_widget(im)
-            fr.bind(on_release=lambda w, uu=u: self.viewer(uu))
-            row.add_widget(fr)
-            self.load_image(im, u)
-        sv.add_widget(row)
-        c.add_widget(sv)
+            fr.bind(on_release=lambda w, k=i: self.viewer(photos, k))
+            grid.add_widget(fr)
+            self.load_image(im, ph["thumb"])
+        holder.add_widget(grid)
+        if len(photos) > shown:
+            self.btn_row(holder, [(f"Όλες οι φωτογραφίες ({len(photos)})",
+                                   lambda: self.show_photos(holder, photos, s, len(photos)), None)])
 
-    def viewer(self, url):
-        """Φωτογραφία σε όλη την οθόνη· πάτημα για κλείσιμο."""
+    def viewer(self, photos, index=0):
+        """Φωτογραφία σε όλη την οθόνη. Σύρε ή πάτα δεξιά/αριστερά για την επόμενη/προηγούμενη, στη μέση για κλείσιμο."""
+        if isinstance(photos, str):
+            photos = [{"thumb": photos, "full": photos, "author": "", "title": ""}]
+        st = {"i": index}
         ov = Tap(orientation="vertical")
 
         def bg(*a):
             ov.canvas.before.clear()
             with ov.canvas.before:
-                Color(0, 0, 0, 0.93)
+                Color(0, 0, 0, 0.95)
                 Rectangle(pos=ov.pos, size=ov.size)
         ov.bind(pos=bg, size=bg)
         im = Image(opacity=0)
@@ -652,10 +682,43 @@ class ArchaiaApp(App):
         except Exception:  # noqa: BLE001
             pass
         ov.add_widget(im)
+        cap = Label(size_hint_y=None, height=dp(52), color=(1, 1, 1, 0.9), font_size=sp(12), halign="center",
+                    valign="middle", markup=True)
+        cap.bind(size=lambda w, v: setattr(w, "text_size", v))
+        ov.add_widget(cap)
         scr = self.sm.get_screen("detail")
+
+        def show():
+            ph = photos[st["i"]]
+            im.opacity = 0
+            im.source = ""
+            by = f" · {esc(ph['author'])}" if ph.get("author") else ""
+            cap.text = (f"[b]{st['i'] + 1} / {len(photos)}[/b]  {esc(ph.get('title', ''))[:60]}{by}\n"
+                        f"[size={int(sp(10))}]◀ σύρε ή πάτα στις άκρες · πάτα στη μέση για κλείσιμο ▶[/size]")
+            self.load_image(im, ph["full"], fallback=ph["thumb"])
+
+        def go(d):
+            st["i"] = (st["i"] + d) % len(photos)
+            show()
+
+        def up(w, touch):
+            if touch.grab_current is not w or ov.parent is None:
+                return
+            touch.ungrab(w)
+            dx = touch.x - touch.ox
+            if abs(dx) > dp(50):
+                go(-1 if dx > 0 else 1)
+            elif touch.x < w.width * 0.28 and len(photos) > 1:
+                go(-1)
+            elif touch.x > w.width * 0.72 and len(photos) > 1:
+                go(1)
+            else:
+                scr.remove_widget(ov)
+            return True
+        ov.bind(on_touch_up=up)
         scr.add_widget(ov)
-        ov.bind(on_release=lambda *a: scr.remove_widget(ov))
-        self.load_image(im, url.replace("/640px-", "/1280px-"), fallback=url)
+        self.viewer_ov = ov
+        show()
 
     # ================================================================== λίστα
     def open_list(self):

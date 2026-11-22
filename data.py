@@ -199,6 +199,99 @@ def gallery(category, limit=12):
     return out[:limit]
 
 
+# ================================================================== φωτογραφίες
+COMMONS = "https://commons.wikimedia.org/w/api.php"
+_SKIP = re.compile(r"(map|χάρτ|plan|κάτοψ|logo|icon|flag|σημαία|coat[_ ]of|locator|location|diagram|σχέδιο|"
+                   r"drawing|stamp|γραμματόσημ|coin|νόμισμα|\.svg|\.tif|\.pdf|\.gif)", re.I)
+
+
+def _pages(d):
+    q = d.get("query") or {}
+    pages = q.get("pages") or {}
+    return list(pages.values()) if isinstance(pages, dict) else pages
+
+
+def _from_pages(pages, out, seen, min_w=360):
+    for p in sorted(pages, key=lambda p: p.get("index", 0)):
+        title = p.get("title", "")
+        ii = (p.get("imageinfo") or [{}])[0]
+        if not ii.get("thumburl") or title in seen or _SKIP.search(title):
+            continue
+        if ii.get("mime") not in ("image/jpeg", "image/png", "image/webp"):
+            continue
+        if ii.get("width") and ii["width"] < min_w:
+            continue
+        seen.add(title)
+        meta = ii.get("extmetadata") or {}
+        author = re.sub(r"<[^>]+>", "", (meta.get("Artist") or {}).get("value", ""))[:60]
+        big = ii.get("url") if (ii.get("width") or 0) <= 1600 else ii["thumburl"].replace("/400px-", "/1280px-")
+        out.append({"thumb": ii["thumburl"], "full": big or ii["thumburl"],
+                    "page": ii.get("descriptionurl", ""), "title": title.split(":", 1)[-1].rsplit(".", 1)[0],
+                    "author": author.strip()})
+
+
+def _ii(extra):
+    base = {"action": "query", "prop": "imageinfo", "iiprop": "url|mime|size|extmetadata",
+            "iiextmetadatafilter": "Artist", "iiurlwidth": 400, "format": "json", "formatversion": 2}
+    base.update(extra)
+    return base
+
+
+def photos(site, limit=30, log=None):
+    """Φωτογραφίες του χώρου από όσες περισσότερες πηγές γίνεται (όλες με ελεύθερη άδεια):
+    1. η κύρια εικόνα του Wikidata, 2. η κατηγορία του στο Commons, 3. το άρθρο της Wikipedia,
+    4. φωτογραφίες τραβηγμένες στο ίδιο σημείο (γεωαναζήτηση Commons), 5. αναζήτηση με το όνομα."""
+    out, seen = [], set()
+    day = 30 * 86400
+
+    def step(fn):
+        if len(out) >= limit:
+            return
+        try:
+            fn()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def main_img():
+        if site.get("img"):
+            name = urllib.parse.unquote(site["img"].rsplit("/", 1)[-1]).replace("_", " ")
+            d = net.get_json(COMMONS, _ii({"titles": "File:" + name}), max_age=day)
+            _from_pages(_pages(d), out, seen, 0)
+
+    def category():
+        cat = (details(site.get("qid")) if site.get("qid") else {}).get("cat")
+        if cat:
+            d = net.get_json(COMMONS, _ii({"generator": "categorymembers", "gcmtitle": "Category:" + cat,
+                                           "gcmtype": "file", "gcmlimit": 40}), max_age=day)
+            _from_pages(_pages(d), out, seen)
+
+    def article():
+        title = ""
+        if site.get("wiki_el"):
+            title = urllib.parse.unquote(site["wiki_el"].rsplit("/wiki/", 1)[-1]).replace("_", " ")
+        if title:
+            d = net.get_json("https://el.wikipedia.org/w/api.php",
+                             _ii({"titles": title, "generator": "images", "gimlimit": 30}), max_age=day)
+            _from_pages(_pages(d), out, seen)
+
+    def nearby():
+        radius = 700 if site.get("important") else 350
+        d = net.get_json(COMMONS, _ii({"generator": "geosearch", "ggscoord": f"{site['lat']}|{site['lon']}",
+                                       "ggsradius": radius, "ggsnamespace": 6, "ggslimit": 40}), max_age=day)
+        _from_pages(_pages(d), out, seen)
+
+    def by_name():
+        d = net.get_json(COMMONS, _ii({"generator": "search", "gsrsearch": f'"{site["name"]}" filetype:bitmap',
+                                       "gsrnamespace": 6, "gsrlimit": 20}), max_age=day)
+        _from_pages(_pages(d), out, seen)
+
+    for fn in (main_img, category, article, nearby):
+        step(fn)
+    if len(out) < 6:
+        step(by_name)
+    return out[:limit]
+
+
 def thumb(img, width=640):
     if not img:
         return ""

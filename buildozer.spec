@@ -5,7 +5,7 @@ package.domain = gr.archaia
 source.dir = .
 source.include_exts = py,json
 source.exclude_dirs = .github, bin, .buildozer, tools
-version = 1.2
+version = 1.3
 requirements = python3,kivy==2.3.1,certifi,android
 orientation = portrait
 fullscreen = 0
